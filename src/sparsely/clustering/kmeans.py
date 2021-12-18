@@ -57,14 +57,23 @@ class SparseKMeans(BaseUnsupervisedModel):
             n_clusters: int,
             n_features_to_select: int,
             n_restarts: int = 10,
+            max_correlation: Optional[float] = None,
             random_state: Optional[int] = None
     ):
         self.n_clusters = n_clusters
         self.n_features_to_select = n_features_to_select
         self.n_restarts = n_restarts
+        self.max_correlation = max_correlation
         self.random_state = random_state
         self._estimator = KMeans(n_clusters=self.n_clusters)
         self._selected_features: Optional[np.ndarray] = None
+
+    def _validate_model(self) -> None:
+        assert self.n_clusters > 1
+        assert self.n_features_to_select > 0
+        assert self.n_restarts > 0
+        if self.max_correlation is not None:
+            assert 0 < self.max_correlation < 1
 
     def _fit(self, X: np.ndarray) -> None:
 
@@ -99,6 +108,14 @@ class SparseKMeans(BaseUnsupervisedModel):
 
             # Add feature selection constraint
             model.add_constr(mip.xsum(weight) == self.n_features_to_select)
+
+            # Add constraints on highly correlated features
+            if self.max_correlation is not None:
+                corr = np.abs(np.corrcoef(X))
+                for j in range(self.n_features):
+                    for k in range(j, self.n_features):
+                        if corr[j, k] > self.max_correlation:
+                            model.add_constr(weight[i] + weight[j] <= 1)
 
             model.optimize()
 

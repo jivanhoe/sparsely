@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
-from sklearn.metrics import roc_auc_score, r2_score
 
 import numpy as np
+from sklearn.metrics import roc_auc_score, r2_score
 
 
 class BaseUnsupervisedModel(ABC):
@@ -11,6 +11,7 @@ class BaseUnsupervisedModel(ABC):
         self._n_features: Optional[int] = None
 
     def fit(self, X: np.ndarray) -> None:
+        self._validate_model()
         self._validate_data(X=X)
         self._fit(X=X)
 
@@ -34,6 +35,10 @@ class BaseUnsupervisedModel(ABC):
         return self._n_features
 
     @abstractmethod
+    def _validate_model(self) -> None:
+        ...
+
+    @abstractmethod
     def _fit(self, X: np.ndarray) -> None:
         ...
 
@@ -53,6 +58,7 @@ class BaseSupervisedModel(ABC):
         self._n_features: Optional[int] = None
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> None:
+        self._validate_model()
         self._validate_data(X=X, y=y, check_y=True)
         self._fit(X=X, y=y)
 
@@ -78,6 +84,10 @@ class BaseSupervisedModel(ABC):
     @property
     def n_features(self) -> int:
         return self._n_features
+
+    @abstractmethod
+    def _validate_model(self) -> None:
+        ...
 
     @abstractmethod
     def _fit(self, X: np.ndarray, y: np.ndarray) -> None:
