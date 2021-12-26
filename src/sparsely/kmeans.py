@@ -1,4 +1,5 @@
-from typing import Callable, List, Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import Callable, List, Optional, Tuple
 
 import mip
 import numpy as np
@@ -7,15 +8,6 @@ from sklearn.preprocessing import StandardScaler
 
 from sparsely.base import BaseUnsupervisedModel
 from sparsely.utils.cutting_planes import cutting_planes_optimizer, Result
-
-from dataclasses import dataclass
-
-
-@dataclass
-class KMeansParams:
-
-    selected_features: np.ndarray
-    cluster_centers: np.ndarray
 
 
 @dataclass
@@ -28,7 +20,7 @@ class SparseKMeans(BaseUnsupervisedModel):
     max_iter: int = 100
     convergence_tol: float = 1e-5
     max_seconds_per_cut: Optional[int] = None
-    random_state: Optional[int] = None
+    random_state: Optional[int] = None,
 
     def __post_init__(self):
         super().__post_init__()
@@ -45,9 +37,9 @@ class SparseKMeans(BaseUnsupervisedModel):
 
         self._estimator: KMeans = KMeans(n_clusters=self.n_clusters)
         self._scaler: StandardScaler = StandardScaler()
-        self._params: Optional[KMeansParams] = None
+        self._selected_features: Optional[np.ndarray] = None
         self._iter: int = 0
-        self._search_results: List[Result] = list()
+        self._solve_results: List[Result] = list()
 
     def _fit(self, X: np.ndarray) -> None:
 
@@ -61,9 +53,8 @@ class SparseKMeans(BaseUnsupervisedModel):
         # Make callback to compute objective value and gradient
         func = self._make_callback(X=X)
 
-        # Initialize best objective value and solution
+        # Initialize best objective value
         best_objective_value = -np.inf
-        best_selected_features = None
 
         # Compute correlation matrix
         corr = np.abs(np.corrcoef(X))
@@ -72,9 +63,11 @@ class SparseKMeans(BaseUnsupervisedModel):
 
             # Initialize MIP model
             model = mip.Model(solver_name=mip.CBC)
+            model.max_mip_gap = self.convergence_tol
+            model.verbose = 0
 
             # Define variables
-            support = model.add_var_tensor(shape=(X.shape[1],), var_type=mip.BINARY, name="weight")
+            support = model.add_var_tensor(shape=(self.n_features,), var_type=mip.BINARY, name="support")
 
             # Add feature selection constraint
             model.add_constr(mip.xsum(support) <= self.n_selected_features)
@@ -96,19 +89,15 @@ class SparseKMeans(BaseUnsupervisedModel):
                 convergence_tol=self.convergence_tol,
                 max_seconds_per_cut=self.max_seconds_per_cut
             )
-            self._search_results.append(result)
+            self._solve_results.append(result)
 
             # Update best result
             if result.objective_value >= best_objective_value:
                 best_objective_value = result.objective_value
-                best_selected_features = np.argwhere(np.round(result.x).astype(bool)).flatten()
+                self._selected_features = np.argwhere(np.round(result.x).astype(bool)).flatten()
 
         # Refit estimator with selected features
-        self._estimator.fit_transform(X=X[:, best_selected_features])
-        self._params = KMeansParams(
-            selected_features=best_selected_features,
-            cluster_centers=self._estimator.cluster_centers_
-        )
+        self._estimator.fit_transform(X=X[:, self._selected_features])
 
     def _make_callback(self, X: np.ndarray) -> Callable[[np.ndarray], Tuple[float, np.ndarray]]:
 
@@ -119,13 +108,11 @@ class SparseKMeans(BaseUnsupervisedModel):
             # Solver inner problem
             clusters = self._estimator.fit_predict(X=X[:, np.round(support).astype(bool)])
 
-            # Compute gradient and objective
-            gradient = (
-                sum((clusters == k).sum() * X[clusters == k].var(axis=0) for k in range(self.n_clusters)) - offset
-            )
-            objective_value = (gradient * support).sum()
+            # Compute gradient and objective value
+            grad = sum((clusters == k).sum() * X[clusters == k].var(axis=0) for k in range(self.n_clusters)) - offset
+            obj_val = (grad * support).sum()
 
-            return objective_value, gradient
+            return obj_val, grad
 
         return func
 
@@ -143,9 +130,19 @@ class SparseKMeans(BaseUnsupervisedModel):
         return np.isin(np.arange(self._n_features), selected_features)
 
     def _predict(self, X: np.ndarray) -> np.ndarray:
-        return self._estimator.predict(X=self._scaler.transform(X=X)[:, self.params.selected_features])
+        return self._estimator.predict(X=self._scaler.transform(X=X)[:, self._selected_features])
 
     @property
-    def params(self) -> KMeansParams:
-        return self._params
+    def selected_feature(self) -> np.ndarray:
+        return self._selected_features
+
+    @property
+    def cluster_centers(self) -> np.ndarray:
+        return self._estimator.cluster_centers_
+
+    @property
+    def solve_results(self) -> List[Result]:
+        return self._solve_results
+
+
 

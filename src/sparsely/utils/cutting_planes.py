@@ -4,15 +4,16 @@ import mip
 from typing import Callable, List, Optional, Tuple
 from dataclasses import dataclass
 
+import logging
+
 
 @dataclass
 class Result:
 
     x: np.ndarray
     objective_value: float
-    gap: float
+    gap_log: List[float]
     bounds_log: List[Tuple[float, float]]
-    incumbent_log: List[np.ndarray]
 
     @property
     def n_iter(self) -> int:
@@ -26,7 +27,8 @@ def cutting_planes_optimizer(
         func: Callable[[np.ndarray], Tuple[float, np.ndarray]],
         max_iter: int = 100,
         convergence_tol: float = 1e-3,
-        max_seconds_per_cut: Optional[int] = None
+        max_seconds_per_cut: Optional[int] = None,
+        verbose: bool = False
 ) -> Result:
 
     # Check parameters
@@ -42,9 +44,9 @@ def cutting_planes_optimizer(
     # Initialize progress log
     lb, ub = -np.inf, np.inf
     bounds_log = list()
-    incumbent_log = list(x0)
+    gap_log = list()
 
-    for _ in range(max_iter):
+    for i in range(max_iter):
 
         # Add new cut
         objective_value, gradient = func(x0)
@@ -56,19 +58,26 @@ def cutting_planes_optimizer(
 
         # Log search progress
         lb, ub = max(lb, model.objective_value), min(ub, objective_value)
+        gap = abs((ub - lb) / ub)
         bounds_log.append((lb, ub))
-        incumbent_log.append(x0)
+        gap_log.append(gap)
+
+        if verbose:
+            logging.info(
+                f"Iter: {str(i)} \t"
+                f"Lower bound: {'{:.2e}'.format(lb)} \t"
+                f"Upper bound: {'{:.2e}'.format(ub)} \t"
+                f"Gap: {'{:.2f}'.format(gap * 100)}%"
+            )
 
         # Check convergence criterion
-        gap = abs((objective_value - model.objective_value) / model.objective_value)
         if gap <= convergence_tol:
             break
 
     return Result(
         x=x0,
         objective_value=model.objective_value,
-        gap=gap,
-        bounds_log=bounds_log,
-        incumbent_log=incumbent_log
+        gap_log=gap_log,
+        bounds_log=bounds_log
     )
 

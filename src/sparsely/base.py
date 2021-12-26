@@ -7,12 +7,6 @@ from dataclasses import dataclass
 
 
 @dataclass
-class ModelParameters(ABC):
-
-    pass
-
-
-@dataclass
 class BaseUnsupervisedModel(ABC):
 
     def __post_init__(self):
@@ -51,11 +45,6 @@ class BaseUnsupervisedModel(ABC):
 
     @abstractmethod
     def _predict(self, X: np.ndarray) -> np.ndarray:
-        ...
-
-    @property
-    @abstractmethod
-    def params(self) -> ModelParameters:
         ...
 
 
@@ -112,12 +101,6 @@ class BaseSupervisedModel(ABC):
     @abstractmethod
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
         ...
-
-    @property
-    @abstractmethod
-    def params(self) -> ModelParameters:
-        ...
-
 
 @dataclass
 class BaseRegressor(BaseSupervisedModel):
