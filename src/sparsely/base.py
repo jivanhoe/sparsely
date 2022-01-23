@@ -1,144 +1,144 @@
-from abc import ABC, abstractmethod
-from typing import Optional
+from __future__ import annotations
 
+from abc import ABCMeta, abstractmethod
+from typing import Optional, Tuple, Callable, Union
+
+import mip
 import numpy as np
-from sklearn.metrics import roc_auc_score, r2_score
-from dataclasses import dataclass
+from sklearn.base import BaseEstimator
+from sklearn.preprocessing import StandardScaler
+
+from sparsely.cutting_planes_optimizer import CuttingPlanesOptimizer
 
 
-@dataclass
-class BaseUnsupervisedModel(ABC):
+class BaseSparseLinearModel(BaseEstimator, metaclass=ABCMeta):
 
-    def __post_init__(self):
-        self._n_features: Optional[int] = None
+    def __init__(
+            self,
+            max_selected_features: int,
+            l2_penalty: float,
+            rescale: bool,
+            max_iter: int,
+            convergence_tol: float,
+            max_seconds_per_cut: Optional[int],
+            random_state: Optional[int],
+            verbose: bool
+    ):
+        self.max_selected_features = max_selected_features
+        self.l2_penalty = l2_penalty
+        self.rescale = rescale
+        self.max_iter = max_iter
+        self.convergence_tol = convergence_tol
+        self.max_seconds_per_cut = max_seconds_per_cut
+        self.random_state = random_state
+        self.verbose = verbose
 
-    def fit(self, X: np.ndarray) -> None:
-        self._validate_data(X=X)
-        self._fit(X=X)
+    def fit(self, X: np.ndarray, y: np.ndarray) -> BaseSparseLinearModel:
+
+        # Perform validation checks
+        self._validate_hyperparameters()
+        self._validate_data(X=X, y=y)
+
+        # Rescale data
+        if self.rescale:
+            self._scaler = StandardScaler()
+            X, y = self._scaler.fit_transform(X)
+
+        # Initialize model
+        model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
+        model.max_mip_gap = self.convergence_tol
+        model.verbose = 0
+
+        # Define variables
+        support = model.add_var_tensor(shape=(self.n_features_in_,), var_type=mip.BINARY, name="support")
+
+        # Set feature selection constraint
+        model.add_constr(mip.xsum(support) <= self.max_selected_features)
+
+        # Configure cutting planes optimizer
+        self._optimizer = CuttingPlanesOptimizer(
+            func=self._make_callback(X=X, y=y),
+            model=model,
+            x=support,
+            max_iter=self.max_iter,
+            convergence_tol=self.convergence_tol,
+            max_seconds_per_cut=self.max_seconds_per_cut,
+            verbose=self.verbose
+        )
+
+        # Optimize model weights
+        self._optimizer.optimize(x0=self._initialize_support())
+        self._weights = self._solver_inner_problem(
+            X=X,
+            y=y,
+            support=self._optimizer.solution,
+            return_weights=True
+        )
+
+        return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        self._validate_data(X=X)
-        return self._predict(X=X)
 
-    def fit_predict(self, X: np.ndarray) -> np.ndarray:
-        self.fit(X=X)
-        return self._predict(X=X)
+        # Perform validation checks
+        self._validate_data(X=X, y=None)
 
-    def _validate_data(self, X: np.ndarray) -> None:
-        assert X.ndim == 2, (
-            f"The feature matrix X must be 2-dimensional. Provided data has {X.ndim} dimensions."
-        )
-        if self.n_features is None:
-            self._n_features = X.shape[1]
-        else:
-            assert X.shape[1] == self.n_features, (
-                f"The expected number of features is {self.n_features}. Provided data has {X.shape[1]} features."
-            )
+        # Rescale data
+        if self.rescale:
+            X = self._scaler.transform(X)
+
+        return np.matmul(X, self._weights)
 
     @property
-    def n_features(self) -> int:
-        return self._n_features
+    def weights(self) -> np.ndarray:
+        return self._weights
 
-    @abstractmethod
-    def _fit(self, X: np.ndarray) -> None:
-        ...
+    def _validate_hyperparameters(self):
+        self._check_positive_int("max_selected_features")
+        self._check_positive_real("l2_penalty")
+        self._check_positive_int("max_iter")
+        self._check_positive_real("convergence_tol")
+        self._check_positive_int("max_seconds_per_cut", none_allowed=True)
 
-    @abstractmethod
-    def _predict(self, X: np.ndarray) -> np.ndarray:
-        ...
-
-
-@dataclass
-class BaseSupervisedModel(ABC):
-
-    def __post_init__(self):
-        self._n_features: Optional[int] = None
-
-    def fit(self, X: np.ndarray, y: np.ndarray) -> None:
-        self._validate_data(X=X, y=y, check_y=True)
-        self._fit(X=X, y=y)
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        self._validate_data(X=X, y=None, check_y=False)
-        return self._predict(X=X)
-
-    def fit_predict(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        self.fit_predict(X=X, y=y)
-        return self.predict(X=X)
-
-    def _validate_data(self, X: np.ndarray, y: Optional[np.ndarray], check_y: bool) -> None:
-        assert X.ndim == 2, (
-            f"The feature matrix 'X' must be 2-dimensional. Provided data has {X.ndim} dimensions."
-        )
-        if self.n_features is None:
-            self._n_features = X.shape[1]
-        else:
-            assert X.shape[1] == self.n_features, (
-                f"The expected number of features is {self.n_features}. Provided data has {X.shape[1]} features."
-            )
-        if check_y:
-            assert y is not None
-            assert y.ndim == 1, (
-                f"The target vector 'y' must be 2-dimensional. Provided data has {y.ndim} dimensions."
-            )
-            assert y.shape[0] == X.shape[0], (
-                f"The number of samples in the feature matrix 'X' ({X.shape[0]}) does not match the number of samples "
-                f"in the target vector 'y' ({y.shape[0]})."
+    def _check_positive_int(self, name: str, none_allowed: bool = False) -> None:
+        value = self.get_params()[name]
+        if value is not None or not none_allowed:
+            assert isinstance(value, int) and value > 0, (
+                f"Invalid value for `{name}`. Positive integer required. Provided value is: {value}."
             )
 
-    @property
-    def n_features(self) -> int:
-        return self._n_features
-
-    @abstractmethod
-    def _fit(self, X: np.ndarray, y: np.ndarray) -> None:
-        ...
-
-    @abstractmethod
-    def _predict(self, X: np.ndarray) -> np.ndarray:
-        ...
-
-    @abstractmethod
-    def score(self, X: np.ndarray, y: np.ndarray) -> float:
-        ...
-
-@dataclass
-class BaseRegressor(BaseSupervisedModel):
-
-    def score(self, X: np.ndarray, y: np.ndarray) -> float:
-        return r2_score(y_true=y, y_pred=self.predict(X=X))
-
-
-@dataclass
-class BaseClassifier(BaseSupervisedModel):
-
-    def __init__(self):
-        super().__init__()
-        self._classes: Optional[np.ndarray] = None
-
-    @property
-    def classes(self) -> np.ndarray:
-        return self._classes
-
-    @property
-    def n_classes(self) -> int:
-        return len(self._classes)
-
-    def _validate_data(self, X: np.ndarray, y: Optional[np.ndarray], check_y: bool) -> None:
-        super()._validate_data(X=X, y=y, check_y=check_y)
-        if check_y:
-            assert y.dtype in (int, bool), (
-                f"The target variable for a classifier must be of type int or bool. Provided data is of type {y.dtype}."
+    def _check_positive_real(self, name: str, none_allowed: bool = False) -> None:
+        value = self.get_params()[name]
+        if value is not None or not none_allowed:
+            assert isinstance(value, (int, float)) and value > 0, (
+                f"Invalid value for `{name}`. Positive real number required. Provided value is: {value}."
             )
-            if self._classes is None:
-                self._classes = np.unique(y)
-                assert self.n_classes > 1, (
-                    f"The number of classes must be greater than 1."
-                )
-            else:
-                assert np.isin(y, self.classes), (
-                    f"Unexpected target classes."
-                )
 
-    def score(self, X: np.ndarray, y: np.ndarray) -> float:
-        return roc_auc_score(y_true=y, y_score=self.predict(X=X), multi_class="ovr" if self.n_classes > 2 else "raise")
+    def _make_callback(self, X: np.ndarray, y: np.ndarray) -> Callable[[np.ndarray], Tuple[float, np.ndarray]]:
+
+        def func(support: np.ndarray) -> Tuple[float, np.ndarray]:
+
+            # Solve inner problem
+            objective_value, dual_variables = self._solver_inner_problem(X=X, y=y, support=support)
+
+            # Return objective value and gradient
+            return (
+                objective_value,
+                -1 / X.shape[0] / self.l2_penalty * (np.matmul(X.T, dual_variables) ** 2)
+            )
+
+        return func
+
+    def _initialize_support(self) -> np.ndarray:
+        random_state = np.random.RandomState(self.random_state)
+        selected_features = random_state.choice(self.n_features_in_, self.max_selected_features, replace=False)
+        return np.isin(np.arange(self.n_features_in_), selected_features).astype(float)
+
+    @abstractmethod
+    def _solver_inner_problem(
+            self,
+            X: np.ndarray,
+            y: np.ndarray,
+            support: np.ndarray,
+            return_weights: bool = False
+    ) -> Union[Tuple[float, np.ndarray], np.ndarray] :
+        ...
