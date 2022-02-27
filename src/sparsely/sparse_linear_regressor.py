@@ -1,7 +1,8 @@
-from typing import Optional, Tuple, Union
+from typing import Optional
 
 import numpy as np
 from sklearn.base import RegressorMixin
+from sklearn.linear_model import Ridge
 
 from sparsely.base import BaseSparseLinearModel
 
@@ -30,32 +31,30 @@ class SparseLinearRegressor(BaseSparseLinearModel, RegressorMixin):
             verbose=verbose
         )
 
-    def _solver_inner_problem(
-            self,
-            X: np.ndarray,
-            y: np.ndarray,
-            support: np.ndarray,
-            return_weights: bool = False
-    ) -> Union[Tuple[float, np.ndarray], np.ndarray]:
+    def _initialize_support(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
+        return np.isin(
+            np.arange(self.n_features_in_),
+            np.argsort(
+                -np.abs(Ridge(alpha=self.l2_penalty * len(X) / self.max_selected_features).fit(X=X, y=y).coef_)
+            )[:self.max_selected_features]
+        )
 
-        # Select features
-        support = np.round(support).astype(bool)
-        X_subset = X[:, support]
-
-        # Compute subset of non-zero weights
-        weights_subset = np.matmul(
-            np.linalg.inv(2 * self.l2_penalty * X.shape[0] * np.eye(support.sum()) + np.matmul(X_subset.T, X_subset)),
+    def _compute_weights_for_subset(self, X_subset: np.ndarray, y: np.ndarray) -> np.ndarray:
+        return np.matmul(
+            np.linalg.inv(
+                2 * self.l2_penalty * X_subset.shape[0] / self.max_selected_features * np.eye(X_subset.shape[1])
+                + np.matmul(X_subset.T, X_subset)
+            ),
             np.matmul(X_subset.T, y)
         )
 
-        # If `return_weights=True`, return the model weights
-        if return_weights:
-            weights = np.zeros(self.n_features_in_)
-            weights[support] = weights_subset
-            return weights
+    def _compute_dual_variables(self, X_subset: np.ndarray, y: np.ndarray, weights_subset: np.ndarray) -> np.ndarray:
+        return y - np.matmul(X_subset, weights_subset)
 
-        # Else, return the objective and dual variables
-        dual_variables = y - np.matmul(X_subset, weights_subset)
-        return 0.5 * np.dot(y, dual_variables), dual_variables
+    def _compute_objective_value(self,  X_subset: np.ndarray, y: np.ndarray, dual_variables: np.ndarray) -> float:
+        return 0.5 * np.dot(y, dual_variables)
+
+
+
 
 

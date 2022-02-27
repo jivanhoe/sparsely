@@ -42,7 +42,7 @@ class BaseSparseLinearModel(BaseEstimator, metaclass=ABCMeta):
         # Rescale data
         if self.rescale:
             self._scaler = StandardScaler()
-            X, y = self._scaler.fit_transform(X)
+            X = self._scaler.fit_transform(X)
 
         # Initialize model
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
@@ -67,7 +67,7 @@ class BaseSparseLinearModel(BaseEstimator, metaclass=ABCMeta):
         )
 
         # Optimize model weights
-        self._optimizer.optimize(x0=self._initialize_support())
+        self._optimizer.optimize(x0=self._initialize_support(X=X, y=y))
         self._weights = self._solver_inner_problem(
             X=X,
             y=y,
@@ -123,17 +123,11 @@ class BaseSparseLinearModel(BaseEstimator, metaclass=ABCMeta):
             # Return objective value and gradient
             return (
                 objective_value,
-                -1 / X.shape[0] / self.l2_penalty * (np.matmul(X.T, dual_variables) ** 2)
+                -self.max_selected_features / np.sqrt(len(X)) / self.l2_penalty * (np.matmul(X.T, dual_variables) ** 2)
             )
 
         return func
 
-    def _initialize_support(self) -> np.ndarray:
-        random_state = np.random.RandomState(self.random_state)
-        selected_features = random_state.choice(self.n_features_in_, self.max_selected_features, replace=False)
-        return np.isin(np.arange(self.n_features_in_), selected_features).astype(float)
-
-    @abstractmethod
     def _solver_inner_problem(
             self,
             X: np.ndarray,
@@ -141,4 +135,39 @@ class BaseSparseLinearModel(BaseEstimator, metaclass=ABCMeta):
             support: np.ndarray,
             return_weights: bool = False
     ) -> Union[Tuple[float, np.ndarray], np.ndarray] :
+
+        # Select features
+        support = np.round(support).astype(bool)
+        X_subset = X[:, support]
+
+        # Compute subset of non-zero weights
+        weights_subset = self._compute_weights_for_subset(X_subset=X_subset, y=y)
+
+        # If `return_weights=True`, return the model weights
+        if return_weights:
+            weights = np.zeros(self.n_features_in_)
+            weights[support] = weights_subset
+            return weights
+
+        # Else, return the objective and dual variables
+        dual_variables = self._compute_dual_variables(X_subset=X_subset, y=y, weights_subset=weights_subset)
+        objective_value = self._compute_objective_value(X_subset=X_subset, y=y, dual_variables=dual_variables)
+        return objective_value, dual_variables
+
+    @abstractmethod
+    def _initialize_support(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         ...
+
+    @abstractmethod
+    def _compute_weights_for_subset(self, X_subset: np.ndarray, y: np.ndarray) -> np.ndarray:
+        ...
+
+    @abstractmethod
+    def _compute_dual_variables(self, X_subset: np.ndarray, y: np.ndarray, weights_subset: np.ndarray) -> np.ndarray:
+        ...
+
+    @abstractmethod
+    def _compute_objective_value(self,  X_subset: np.ndarray, y: np.ndarray, dual_variables: np.ndarray) -> float:
+        ...
+
+

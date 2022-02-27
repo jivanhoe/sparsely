@@ -12,13 +12,15 @@ class BaseDataGenerator(ABC):
             n_features: int,
             n_informative: int,
             n_redundant: int,
-            noise: float
+            noise: float,
+            min_weight_magnitude: float
     ):
         self.n_samples = n_samples
         self.n_features = n_features
         self.n_informative = n_informative
         self.n_redundant = n_redundant
         self.noise = noise
+        self.min_weight_magnitude = min_weight_magnitude
 
     def sample(
             self,
@@ -42,7 +44,9 @@ class BaseDataGenerator(ABC):
         X = rng.randn(self.n_samples, self.n_features - self.n_redundant)
         if self.n_redundant > 0:
             X = np.column_stack([
-                X, np.matmul(X[:, :self.n_informative], rng.randn(self.n_informative, self.n_redundant))
+                X,
+                np.matmul(X[:, :self.n_informative], rng.randn(self.n_informative, self.n_redundant))
+                + rng.randn(self.n_samples, self.n_redundant)
             ])
         feature_order = np.arange(self.n_features)
         if shuffle_features:
@@ -54,7 +58,13 @@ class BaseDataGenerator(ABC):
             mask: np.ndarray,
             rng: np.random.RandomState
     ) -> np.ndarray:
-        return rng.randn(self.n_features) * mask
+        weights = rng.randn(self.n_features)
+        weights = np.where(
+            np.abs(weights) >= self.min_weight_magnitude,
+            weights,
+            np.sign(weights) * self.min_weight_magnitude
+        )
+        return weights * mask
 
     @abstractmethod
     def _generate_targets(
@@ -74,14 +84,16 @@ class RegressionDataGenerator(BaseDataGenerator):
             n_features: int = 10,
             n_informative: int = 3,
             n_redundant: int = 2,
-            noise: float = 0.1
+            noise: float = 0.1,
+            min_weight_magnitude=0.1
     ):
         super().__init__(
             n_samples=n_samples,
             n_features=n_features,
             n_informative=n_informative,
             n_redundant=n_redundant,
-            noise=noise
+            noise=noise,
+            min_weight_magnitude=min_weight_magnitude
         )
 
     def _generate_targets(
@@ -102,6 +114,7 @@ class ClassificationDataGenerator(BaseDataGenerator):
             n_informative: int = 3,
             n_redundant: int = 2,
             noise: float = 0.,
+            min_weight_magnitude: float = 0.1,
             flip_proba: float = 0.1
     ):
         super().__init__(
@@ -109,7 +122,8 @@ class ClassificationDataGenerator(BaseDataGenerator):
             n_features=n_features,
             n_informative=n_informative,
             n_redundant=n_redundant,
-            noise=noise
+            noise=noise,
+            min_weight_magnitude=min_weight_magnitude
         )
         self.flip_proba = flip_proba
 
@@ -122,4 +136,4 @@ class ClassificationDataGenerator(BaseDataGenerator):
         y = 1 / (1 + np.exp(-np.matmul(X, weights) + self.noise * rng.randn(self.n_samples))) > .5
         flip_mask = rng.rand(self.n_samples) > self.flip_proba
         y[flip_mask] = ~y[flip_mask]
-        return y
+        return 2 * y.astype(int) - 1
